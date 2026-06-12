@@ -39,3 +39,9 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# local tooling
+.argent/
+
+# raw demo footage (compressed mp4 is committed)
+demo/*-raw.mov
