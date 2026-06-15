@@ -30,7 +30,7 @@ import {
 } from '../demoReel';
 import { EFFECTS } from '../effects';
 import { decodeReveal } from '../effects/decodeReveal';
-import { EffectShowcase, SHOWCASE_EFFECT_IDS } from './EffectShowcase';
+import { EffectShowcase, SHOWCASE_EFFECT_IDS } from './EffectShowcaseSkia';
 import { countGraphemes } from '../engine/graphemes';
 import type { CharInfo, Rect, TextEffect } from '../engine/types';
 import { useEffectDriver } from '../engine/useEffectDriver';
