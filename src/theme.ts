@@ -12,6 +12,10 @@ export const stageText = {
   fontSize: 30,
   fontWeight: '600',
   lineHeight: 38,
+  // Explicit letterSpacing overrides the font's contextual kerning, so the
+  // typed TextInput and the per-char effect layout (which can't kern) match —
+  // otherwise the letters spread and the line jumps when an effect fires.
+  letterSpacing: 0,
   color: theme.text,
 } as const;
 

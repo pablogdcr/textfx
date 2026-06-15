@@ -27,12 +27,14 @@ interface Props {
   progress: SharedValue<number>;
   touch: EffectCtx['touch'];
   reveal: EffectCtx['reveal'];
+  /** Allow words to wrap across lines (true for the centred stage; false keeps a phrase on one line). */
+  wrap?: boolean;
 }
 
 const SPACE_SAMPLE = 10;
 
 function EffectTextInner(
-  { text, effect, playId, progress, touch, reveal }: Props,
+  { text, effect, playId, progress, touch, reveal, wrap = true }: Props,
   ref: ForwardedRef<EffectTextHandle>,
 ) {
   const { words, chars } = useMemo(() => splitWords(text), [text]);
@@ -135,7 +137,7 @@ function EffectTextInner(
       {spaceW != null && (
         <Animated.View
           ref={containerRef}
-          style={[styles.row, { columnGap: spaceW }, containerAnim]}
+          style={[styles.row, { columnGap: spaceW }, !wrap && styles.nowrap, containerAnim]}
           collapsable={false}
         >
           {words.map((word) => (
@@ -175,6 +177,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     justifyContent: 'center',
+  },
+  nowrap: {
+    flexWrap: 'nowrap',
   },
   word: {
     flexDirection: 'row',
