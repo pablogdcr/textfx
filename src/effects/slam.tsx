@@ -7,7 +7,7 @@ import type { OverlayProps, TextEffect } from '../engine/types';
 
 const IMPACT = 0.22;
 
-function SlamOverlay({ progress, rects, width }: OverlayProps) {
+function SlamOverlay({ progress, rects, width, intensity = 1 }: OverlayProps) {
   const { cx, cy } = useMemo(() => textBlockBounds(rects), [rects]);
   const r = useDerivedValue(() => {
     const t = seg(progress.value, IMPACT, 0.75);
@@ -15,7 +15,9 @@ function SlamOverlay({ progress, rects, width }: OverlayProps) {
   });
   const opacity = useDerivedValue(() => {
     const t = seg(progress.value, IMPACT, 0.75);
-    return t <= 0 ? 0 : 0.55 * (1 - t);
+    // hold the ring brighter for the first half of its expansion, then fade —
+    // a flat (1 - t) fade vanishes before the eye registers it on the busy wall
+    return t <= 0 ? 0 : Math.min(1, 0.55 * intensity * (1 - t * t));
   });
   const strokeWidth = useDerivedValue(() => 22 * (1 - seg(progress.value, IMPACT, 0.75)) + 2);
   return (
