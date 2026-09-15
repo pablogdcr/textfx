@@ -40,6 +40,9 @@ export interface OverlayProps {
   width: number;
   height: number;
   chars: CharInfo[];
+  /** Visibility multiplier (default 1). The finale wall bumps this so a single
+   *  cell's overlay still reads against ~20 others animating at once. */
+  intensity?: number;
 }
 
 export interface ScrambleConfig {

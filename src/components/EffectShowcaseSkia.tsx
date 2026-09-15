@@ -1,11 +1,13 @@
-import { useEffect, useMemo, useState } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { StyleSheet } from 'react-native';
 import { Canvas, Glyphs, Group, matchFont } from '@shopify/react-native-skia';
-import {
+import Animated, {
   Easing,
+  FadeIn,
   useDerivedValue,
   useSharedValue,
   withRepeat,
+  withSequence,
   withTiming,
   type SharedValue,
 } from 'react-native-reanimated';
@@ -18,6 +20,7 @@ const FONT = matchFont({ fontFamily: 'System', fontSize: 30, fontWeight: '600' }
 const LINE_H = 46;
 const SEP_GAP = 26;
 const DRIFT = 56;
+const SLIDE_IN = 46; // each line slides in this far during the fade, so it's never static
 const DEFAULT_COLOR = theme.text;
 
 interface Cell {
@@ -32,19 +35,19 @@ interface Line {
 const SHOWCASE_LINES: Line[] = [
   { dir: 'left', cells: [
     { text: 'iOS effects', effectId: 'shimmer' },
-    { text: 'Ship it', effectId: 'slam' },
-    { text: 'all JS', effectId: 'glitch' },
-    { text: '60fps', effectId: 'bounce' },
+    { text: 'No way', effectId: 'loud' },
+    { text: 'all JS', effectId: 'bounce' },
+    { text: '60fps', effectId: 'glitch' },
   ] },
   { dir: 'right', cells: [
     { text: 'So smooth', effectId: 'wave' },
-    { text: 'No way', effectId: 'loud' },
+    { text: 'Ship it', effectId: 'confetti' },
     { text: 'pure Skia', effectId: 'gentle' },
-    { text: 'Wow', effectId: 'bounce' },
+    { text: 'Wow', effectId: 'decode' },
   ] },
   { dir: 'left', cells: [
     { text: 'React Native', effectId: 'gentle' },
-    { text: 'Open it?', effectId: 'slam' },
+    { text: 'Open it?', effectId: 'ink' },
     { text: 'Insane', effectId: 'loud' },
     { text: 'one API', effectId: 'shimmer' },
   ] },
@@ -52,7 +55,7 @@ const SHOWCASE_LINES: Line[] = [
     { text: 'It works!', effectId: 'bounce' },
     { text: 'Need this', effectId: 'wave' },
     { text: 'Star it', effectId: 'slam' },
-    { text: 'Reanimated', effectId: 'gentle' },
+    { text: 'Reanimated', effectId: 'glitch' },
   ] },
   { dir: 'left', cells: [
     { text: 'no native code', effectId: 'wave' },
@@ -92,6 +95,7 @@ interface LaidGlyph {
   id: number;
   x: number;
   cx: number;
+  width: number;
   info: CharInfo;
 }
 interface LaidCell {
@@ -119,7 +123,7 @@ function layoutLine(line: Line): LaidLine {
       cells.push({
         effect: null,
         cx: x + SEP_GAP,
-        glyphs: [{ id: SEP_GLYPH, x: x + SEP_GAP, cx: x + SEP_GAP, info: blankInfo() }],
+        glyphs: [{ id: SEP_GLYPH, x: x + SEP_GAP, cx: x + SEP_GAP, width: SEP_W, info: blankInfo() }],
       });
       x += SEP_W;
     }
@@ -138,6 +142,7 @@ function layoutLine(line: Line): LaidLine {
           id: ids[i],
           x,
           cx: x + w / 2,
+          width: w,
           info: { index: idx, count, char: ch, wordIndex: ci, indexInWord: i, seed: hash01(ch, idx * 31 + ci) },
         });
         idx++;
@@ -209,39 +214,117 @@ function LayerGlyph({
 
 function CellNode({
   cell,
-  progress,
+  loopProgress,
+  punchProgress,
+  settleProgress,
   ctx,
   baseY,
+  canvasW,
+  canvasH,
 }: {
   cell: LaidCell;
-  progress: SharedValue<number>;
+  loopProgress: SharedValue<number>;
+  punchProgress: SharedValue<number>;
+  settleProgress: SharedValue<number>;
   ctx: EffectCtx;
   baseY: number;
+  canvasW: number;
+  canvasH: number;
 }) {
-  const container = cell.effect?.containerStyle;
-  const containerTransform = useDerivedValue<any>(() =>
-    container ? normTransform(container(progress.value)) : [],
+  const effect = cell.effect;
+  const container = effect?.containerStyle;
+  const Overlay = effect?.Overlay;
+  // Persistent effects (Invisible Ink) settle once and hold. Container effects
+  // (Slam) run on a faster clock so they re-slam ~once a second — clearly
+  // looping rather than slamming once and sitting. Everything else loops.
+  const settle = !!effect?.persistent;
+  const progress = settle ? settleProgress : container ? punchProgress : loopProgress;
+  const containerTransform = useDerivedValue<any>(() => {
+    if (!container) return [];
+    // containerStyle returns { opacity, transform: [...] } — take the transform.
+    // Slam's scale (~3.1) is tuned for one full-screen headline; on a small wall
+    // cell it balloons over the centre. Dampen the scale so it slams in place.
+    return normTransform(container(progress.value).transform).map((it: any) =>
+      it.scale !== undefined ? { scale: 1 + (it.scale - 1) * 0.6 } : it,
+    );
+  });
+
+  // char rects (for overlay particle effects: ink, fireworks, …) in line-local
+  // coords so they scroll with the marquee group
+  const rects = useMemo(
+    () => cell.glyphs.map((g) => ({ x: g.x, y: baseY + M.ascent, width: g.width, height: M.descent - M.ascent })),
+    [cell, baseY],
   );
-  const glyphs = cell.glyphs.map((g, i) =>
-    cell.effect ? (
-      <GlyphNode key={i} g={g} effect={cell.effect} progress={progress} ctx={ctx} baseY={baseY} />
-    ) : (
-      <StaticGlyph key={i} g={g} baseY={baseY} />
-    ),
-  );
-  if (container) {
-    return (
+  const chars = useMemo(() => cell.glyphs.map((g) => g.info), [cell]);
+  // cell pixel width — used to size Slam's shockwave ring to the cell (its radius
+  // is width * 0.75; the full canvas width would draw a ring across the wall)
+  const cellWidth = useMemo(() => {
+    if (cell.glyphs.length === 0) return canvasW;
+    const first = cell.glyphs[0];
+    const last = cell.glyphs[cell.glyphs.length - 1];
+    return last.x + last.width - first.x;
+  }, [cell, canvasW]);
+
+  let glyphs: ReactNode = null;
+  if (!effect?.hidesBaseText) {
+    const nodes = cell.glyphs.map((g, i) =>
+      effect ? (
+        <GlyphNode key={i} g={g} effect={effect} progress={progress} ctx={ctx} baseY={baseY} />
+      ) : (
+        <StaticGlyph key={i} g={g} baseY={baseY} />
+      ),
+    );
+    glyphs = container ? (
       <Group transform={containerTransform} origin={{ x: cell.cx, y: baseY }}>
-        {glyphs}
+        {nodes}
       </Group>
+    ) : (
+      nodes
     );
   }
-  return <>{glyphs}</>;
+
+  return (
+    <>
+      {glyphs}
+      {/* draw the overlay for Invisible Ink (its cloud) and Slam (its ring, sized
+          to the cell). Pure particle bursts (Confetti/Fireworks) spread full-screen
+          and don't tile, so they stay out. */}
+      {(effect?.hidesBaseText || container) && Overlay && (
+        <Overlay
+          progress={progress}
+          rects={rects}
+          touch={ctx.touch}
+          reveal={ctx.reveal}
+          width={container ? cellWidth * 2.6 : canvasW}
+          height={canvasH}
+          chars={chars}
+          intensity={container ? 1.7 : 1}
+        />
+      )}
+    </>
+  );
 }
 
-function MarqueeLine({ line, centerY, centerX }: { line: LaidLine; centerY: number; centerX: number }) {
-  const tx = useSharedValue(0);
-  const progress = useSharedValue(0);
+function MarqueeLine({
+  line,
+  centerY,
+  centerX,
+  canvasW,
+  canvasH,
+}: {
+  line: LaidLine;
+  centerY: number;
+  centerX: number;
+  canvasW: number;
+  canvasH: number;
+}) {
+  // start offset in the drift direction so the line slides in (never appears static)
+  const startTx = line.dir === 'left' ? SLIDE_IN : -SLIDE_IN;
+  const endTx = line.dir === 'left' ? -DRIFT : DRIFT;
+  const tx = useSharedValue(startTx);
+  const loopProgress = useSharedValue(0);
+  const punchProgress = useSharedValue(0);
+  const settleProgress = useSharedValue(0);
   const ctx: EffectCtx = {
     rect: undefined,
     touch: useSharedValue({ x: 0, y: 0, active: 0 }),
@@ -249,9 +332,17 @@ function MarqueeLine({ line, centerY, centerX }: { line: LaidLine; centerY: numb
   };
 
   useEffect(() => {
-    progress.value = withRepeat(withTiming(1, { duration: 1600, easing: Easing.linear }), -1, false);
-    tx.value = withTiming(line.dir === 'left' ? -DRIFT : DRIFT, { duration: 6000, easing: Easing.linear });
-  }, [line.dir, progress, tx]);
+    loopProgress.value = withRepeat(withTiming(1, { duration: 1600, easing: Easing.linear }), -1, false);
+    punchProgress.value = withRepeat(withTiming(1, { duration: 900, easing: Easing.linear }), -1, false);
+    settleProgress.value = withTiming(1, { duration: 1500, easing: Easing.out(Easing.cubic) });
+    // quick slide-in (plays during the fade, so the wall is moving as it appears)
+    // then ease into the slow continuous drift
+    tx.value = startTx;
+    tx.value = withSequence(
+      withTiming(0, { duration: 520, easing: Easing.out(Easing.cubic) }),
+      withTiming(endTx, { duration: 6000, easing: Easing.linear }),
+    );
+  }, [line.dir, loopProgress, punchProgress, settleProgress, tx, startTx, endTx]);
 
   const x0 = centerX - line.width / 2;
   const baseY = centerY + BASELINE_OFFSET;
@@ -260,7 +351,17 @@ function MarqueeLine({ line, centerY, centerX }: { line: LaidLine; centerY: numb
   return (
     <Group transform={groupTransform}>
       {line.cells.map((cell, i) => (
-        <CellNode key={i} cell={cell} progress={progress} ctx={ctx} baseY={baseY} />
+        <CellNode
+          key={i}
+          cell={cell}
+          loopProgress={loopProgress}
+          punchProgress={punchProgress}
+          settleProgress={settleProgress}
+          ctx={ctx}
+          baseY={baseY}
+          canvasW={canvasW}
+          canvasH={canvasH}
+        />
       ))}
     </Group>
   );
@@ -272,9 +373,10 @@ export function EffectShowcase() {
   const lines = useMemo(() => SHOWCASE_LINES.map(layoutLine), []);
 
   return (
-    <View
+    <Animated.View
       style={styles.fill}
       pointerEvents="none"
+      entering={FadeIn.duration(450)}
       onLayout={(e) => setSize({ w: e.nativeEvent.layout.width, h: e.nativeEvent.layout.height })}
     >
       {size.h > 0 && FONT && (
@@ -285,11 +387,13 @@ export function EffectShowcase() {
               line={line}
               centerX={size.w / 2}
               centerY={size.h / 2 + (i - (lines.length - 1) / 2) * LINE_H}
+              canvasW={size.w}
+              canvasH={size.h}
             />
           ))}
         </Canvas>
       )}
-    </View>
+    </Animated.View>
   );
 }
 
